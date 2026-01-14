@@ -20,7 +20,7 @@ import (
 
 const (
 	maxPayloadSize = 1 << 20 // 1MB
-	notifyEmail    = "new-registration@codeGROOVE.dev"
+	notifyEmail    = "new-registration@reviewGOOSE.dev"
 )
 
 // MarketplaceEvent represents a GitHub Marketplace webhook ev.

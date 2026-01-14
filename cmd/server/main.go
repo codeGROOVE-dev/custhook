@@ -21,7 +21,7 @@ const (
 	maxHeaderBytes = 1 << 20 // 1MB
 	shutdownWait   = 5 * time.Second
 
-	defaultFromAddr = "noreply@codeGROOVE.dev"
+	defaultFromAddr = "noreply@reviewGOOSE.dev"
 	defaultFromName = "reviewGOOSE"
 )
 
