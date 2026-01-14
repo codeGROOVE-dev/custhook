@@ -101,7 +101,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only handle marketplace_purchase events
+	// Handle ping events - send notification
+	if event == "ping" {
+		h.logger.Info("ping event received",
+			"event", event,
+			"id", id)
+		subj := "[reviewGOOSE] Webhook ping received"
+		body := formatPingEmailBody(id, r.RemoteAddr)
+		if err := h.emailProvider.Send(ctx, notifyEmail, subj, body); err != nil {
+			h.logger.Error("failed to send ping notification email",
+				"error", err,
+				"id", id)
+		} else {
+			h.logger.Info("ping notification email sent",
+				"to", notifyEmail,
+				"id", id)
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("pong")); err != nil {
+			h.logger.Error("failed to write ping response", "error", err, "id", id)
+		}
+		h.logger.Info("ping request completed", "id", id, "duration_ms", time.Since(start).Milliseconds())
+		return
+	}
+
+	// Only handle marketplace_purchase events, ignore other event types
 	if event != "marketplace_purchase" {
 		h.logger.Info("ignoring non-marketplace event",
 			"event", event,
@@ -259,6 +283,51 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 	if ev.EffectiveDate != "" {
 		field("Effective Date", ev.EffectiveDate)
 	}
+
+	sb.WriteString(`</div>
+</div>
+</body>
+</html>`)
+
+	return sb.String()
+}
+
+// formatPingEmailBody creates an HTML email body for ping events.
+func formatPingEmailBody(deliveryID, remoteAddr string) string {
+	var sb strings.Builder
+	sb.WriteString(`<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
+.container { max-width: 600px; margin: 0 auto; padding: 20px; }
+.header { background: #28a745; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+.content { background: #f6f8fa; padding: 20px; border-radius: 0 0 8px 8px; }
+.field { margin-bottom: 12px; }
+.label { font-weight: 600; color: #586069; }
+.value { color: #24292e; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="header">
+<h1 style="margin: 0;">reviewGOOSE Webhook Ping</h1>
+</div>
+<div class="content">
+<p>GitHub has successfully pinged the reviewGOOSE webhook endpoint.</p>
+`)
+
+	sb.WriteString(`<div class="field"><span class="label">Delivery ID:</span> <span class="value">`)
+	sb.WriteString(html.EscapeString(deliveryID))
+	sb.WriteString(`</span></div>`)
+
+	sb.WriteString(`<div class="field"><span class="label">Remote Address:</span> <span class="value">`)
+	sb.WriteString(html.EscapeString(remoteAddr))
+	sb.WriteString(`</span></div>`)
+
+	sb.WriteString(`<div class="field"><span class="label">Timestamp:</span> <span class="value">`)
+	sb.WriteString(html.EscapeString(time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString(`</span></div>`)
 
 	sb.WriteString(`</div>
 </div>

@@ -112,7 +112,8 @@ func TestHandler_ServeHTTP_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_ServeHTTP_NonMarketplaceEvent(t *testing.T) {
-	h := NewHandler("secret", &mockEmailProvider{}, slog.New(slog.DiscardHandler))
+	mp := &mockEmailProvider{}
+	h := NewHandler("secret", mp, slog.New(slog.DiscardHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", http.NoBody)
 	req.Header.Set("X-GitHub-Event", "push") //nolint:canonicalheader // GitHub header
@@ -122,6 +123,37 @@ func TestHandler_ServeHTTP_NonMarketplaceEvent(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("got status %d, want %d", w.Code, http.StatusOK)
+	}
+	if mp.sendCalled {
+		t.Error("non-marketplace events (except ping) should not send email")
+	}
+}
+
+func TestHandler_ServeHTTP_PingEvent(t *testing.T) {
+	mp := &mockEmailProvider{}
+	h := NewHandler("secret", mp, slog.New(slog.DiscardHandler))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", http.NoBody)
+	req.Header.Set("X-GitHub-Event", "ping")                      //nolint:canonicalheader // GitHub header
+	req.Header.Set("X-GitHub-Delivery", "ping-delivery-id-12345") //nolint:canonicalheader // GitHub header
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusOK)
+	}
+	if w.Body.String() != "pong" {
+		t.Errorf("got body %q, want %q", w.Body.String(), "pong")
+	}
+	if !mp.sendCalled {
+		t.Error("ping events should send notification email")
+	}
+	if mp.lastTo != notifyEmail {
+		t.Errorf("got to=%q, want %q", mp.lastTo, notifyEmail)
+	}
+	if !strings.Contains(mp.lastSubj, "ping") {
+		t.Errorf("subject %q should contain 'ping'", mp.lastSubj)
 	}
 }
 
@@ -348,6 +380,39 @@ func TestFormatEmailBody_HTMLEscaping(t *testing.T) {
 	}
 	if strings.Contains(body, "<b>evil</b>") {
 		t.Error("HTML should be escaped")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Error("should contain escaped HTML")
+	}
+}
+
+func TestFormatPingEmailBody(t *testing.T) {
+	body := formatPingEmailBody("delivery-123", "192.168.1.1:54321")
+
+	checks := []string{
+		"delivery-123",
+		"192.168.1.1:54321",
+		"Webhook Ping",
+		"Delivery ID",
+		"Remote Address",
+		"Timestamp",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Errorf("body should contain %q", check)
+		}
+	}
+}
+
+func TestFormatPingEmailBody_HTMLEscaping(t *testing.T) {
+	body := formatPingEmailBody("<script>evil</script>", "<b>bad</b>")
+
+	if strings.Contains(body, "<script>") {
+		t.Error("HTML should be escaped in delivery ID")
+	}
+	if strings.Contains(body, "<b>bad</b>") {
+		t.Error("HTML should be escaped in remote addr")
 	}
 	if !strings.Contains(body, "&lt;script&gt;") {
 		t.Error("should contain escaped HTML")

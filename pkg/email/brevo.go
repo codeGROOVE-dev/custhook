@@ -52,6 +52,12 @@ type brevoContact struct {
 
 // Send sends an email via Brevo API.
 func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) error {
+	b.logger.Info("preparing Brevo email",
+		"to", to,
+		"subject", subject,
+		"from", b.fromAddr,
+		"body_length", len(body))
+
 	msg := brevoSendRequest{
 		Sender: brevoContact{
 			Email: b.fromAddr,
@@ -66,8 +72,11 @@ func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) erro
 
 	data, err := json.Marshal(msg)
 	if err != nil {
+		b.logger.Error("failed to marshal Brevo request", "to", to, "error", err)
 		return fmt.Errorf("marshal request: %w", err)
 	}
+
+	b.logger.Debug("Brevo request payload prepared", "payload_size", len(data))
 
 	return retry.Do(
 		func() error {
@@ -75,11 +84,14 @@ func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) erro
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 				b.baseURL, bytes.NewReader(data))
 			if err != nil {
+				b.logger.Error("failed to create Brevo HTTP request", "to", to, "error", err)
 				return fmt.Errorf("create request: %w", err)
 			}
 
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Api-Key", b.apiKey)
+
+			b.logger.Debug("sending Brevo API request", "to", to, "url", b.baseURL)
 
 			resp, err := b.client.Do(req)
 			dur := time.Since(start)
@@ -87,22 +99,33 @@ func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) erro
 			if err != nil {
 				b.logger.Warn("Brevo API request failed",
 					"to", to,
+					"subject", subject,
 					"duration_ms", dur.Milliseconds(),
 					"error", err)
 				return err
 			}
 			defer func() {
-				// Drain and close body to enable connection reuse
-				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16)) //nolint:errcheck // best-effort drain
-				_ = resp.Body.Close()                                        //nolint:errcheck // best-effort close
+				_ = resp.Body.Close() //nolint:errcheck // best-effort close
 			}()
+
+			// Read response body for logging
+			respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			respBodyStr := ""
+			if readErr == nil {
+				respBodyStr = string(respBody)
+			} else {
+				b.logger.Warn("failed to read Brevo response body", "error", readErr)
+			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				b.logger.Warn("Brevo API returned non-2xx status",
 					"status", resp.StatusCode,
 					"to", to,
+					"subject", subject,
+					"duration_ms", dur.Milliseconds(),
+					"response_body", respBodyStr,
 					"will_retry", resp.StatusCode >= 500)
-				err := fmt.Errorf("HTTP %d", resp.StatusCode)
+				err := fmt.Errorf("HTTP %d: %s", resp.StatusCode, respBodyStr)
 				// Only retry server errors (5xx), not client errors (4xx)
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 {
 					return retry.Unrecoverable(err)
@@ -110,9 +133,12 @@ func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) erro
 				return err
 			}
 
-			b.logger.Info("Brevo API request completed",
+			b.logger.Info("Brevo API request succeeded",
 				"to", to,
-				"duration_ms", dur.Milliseconds())
+				"subject", subject,
+				"status", resp.StatusCode,
+				"duration_ms", dur.Milliseconds(),
+				"response_body", respBodyStr)
 
 			return nil
 		},
@@ -122,7 +148,11 @@ func (b *BrevoProvider) Send(ctx context.Context, to, subject, body string) erro
 		retry.MaxJitter(10*time.Second),
 		retry.Context(ctx),
 		retry.OnRetry(func(n uint, err error) {
-			b.logger.Info("Retrying Brevo email send after error", "attempt", n, "error", err)
+			b.logger.Warn("retrying Brevo email send",
+				"attempt", n,
+				"to", to,
+				"subject", subject,
+				"error", err)
 		}),
 	)
 }
