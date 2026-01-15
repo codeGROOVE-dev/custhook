@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -262,6 +263,97 @@ func TestHandler_ServeHTTP_Success(t *testing.T) {
 	}
 	if !strings.Contains(mp.lastSubj, "purchased") {
 		t.Errorf("subject %q should contain 'purchased'", mp.lastSubj)
+	}
+}
+
+func TestHandler_ServeHTTP_FormEncoded(t *testing.T) {
+	secret := "test-secret"
+	event := MarketplaceEvent{
+		Action:        "purchased",
+		EffectiveDate: "2024-01-15",
+		MarketplacePurchase: MarketplacePurchase{
+			Account: Account{
+				Login: "formuser",
+				Email: "form@example.com",
+				Type:  "User",
+			},
+			Plan: Plan{
+				Name: "Pro",
+			},
+			BillingCycle: "monthly",
+			UnitCount:    1,
+		},
+		Sender: Sender{
+			Login: "admin",
+			ID:    456,
+		},
+	}
+
+	jsonPayload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("failed to marshal event: %v", err)
+	}
+
+	// Form-encode the JSON payload (this is what GitHub sends)
+	formBody := "payload=" + url.QueryEscape(string(jsonPayload))
+
+	// Signature is computed over the raw form-encoded body
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(formBody))
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	mp := &mockEmailProvider{}
+	h := NewHandler(secret, mp, slog.New(slog.DiscardHandler))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(formBody))
+	req.Header.Set("X-GitHub-Event", "marketplace_purchase") //nolint:canonicalheader // GitHub header
+	req.Header.Set("X-Hub-Signature-256", sig)
+	req.Header.Set("X-GitHub-Delivery", "form-delivery-id") //nolint:canonicalheader // GitHub header
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusOK)
+	}
+	if !mp.sendCalled {
+		t.Error("expected email to be sent")
+	}
+	if mp.lastTo != notifyEmail {
+		t.Errorf("got to=%q, want %q", mp.lastTo, notifyEmail)
+	}
+	if !strings.Contains(mp.lastSubj, "purchased") {
+		t.Errorf("subject %q should contain 'purchased'", mp.lastSubj)
+	}
+	if !strings.Contains(mp.lastSubj, "formuser") {
+		t.Errorf("subject %q should contain 'formuser'", mp.lastSubj)
+	}
+}
+
+func TestHandler_ServeHTTP_FormEncodedMissingPayload(t *testing.T) {
+	secret := "test-secret"
+	// Form body without "payload" field
+	formBody := "other=value"
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(formBody))
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	h := NewHandler(secret, &mockEmailProvider{}, slog.New(slog.DiscardHandler))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(formBody))
+	req.Header.Set("X-GitHub-Event", "marketplace_purchase") //nolint:canonicalheader // GitHub header
+	req.Header.Set("X-Hub-Signature-256", sig)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 

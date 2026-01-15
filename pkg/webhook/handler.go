@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +153,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify signature
+	// Verify signature (always against raw body, before any parsing)
 	if !verifySignature(body, sig, h.secret) {
 		h.logger.Warn("webhook rejected: signature verification failed",
 			"id", id,
@@ -162,9 +163,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract JSON payload based on Content-Type
+	// GitHub may send form-encoded data with payload in "payload" field
+	payload := body
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
+		values, err := parseFormBody(body)
+		if err != nil {
+			h.logger.Error("error parsing form body", "error", err, "id", id)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		payload = []byte(values.Get("payload"))
+		if len(payload) == 0 {
+			h.logger.Error("missing payload field in form data", "id", id)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Parse payload
 	var ev MarketplaceEvent
-	if err := json.Unmarshal(body, &ev); err != nil {
+	if err := json.Unmarshal(payload, &ev); err != nil {
 		h.logger.Error("error parsing webhook payload", "error", err, "id", id)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -214,6 +234,11 @@ func verifySignature(payload []byte, signature, secret string) bool {
 	}
 
 	return hmac.Equal([]byte(signature), []byte(expected))
+}
+
+// parseFormBody parses URL-encoded form data from a byte slice.
+func parseFormBody(body []byte) (url.Values, error) {
+	return url.ParseQuery(string(body))
 }
 
 // formatEmailBody creates an HTML email body for the marketplace event.
